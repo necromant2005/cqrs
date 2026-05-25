@@ -43,6 +43,14 @@ final class EventRepository extends ServiceEntityRepository
             ->getOneOrNullResult();
     }
 
+    public function hasPaymentResult(string $externalEventId): bool
+    {
+        return $this->hasAnyExternalEvent($externalEventId, [
+            EventType::PaymentSucceeded,
+            EventType::PaymentFailed,
+        ]);
+    }
+
     /**
      * @param list<EventType> $eventTypes
      */

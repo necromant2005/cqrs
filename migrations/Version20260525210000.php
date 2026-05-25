@@ -26,6 +26,7 @@ final class Version20260525210000 extends AbstractMigration
         , previous_status VARCHAR(20) DEFAULT NULL, new_status VARCHAR(20) DEFAULT NULL, external_event_id VARCHAR(255) DEFAULT NULL, occurred_at DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY(id))');
         $this->addSql('CREATE INDEX idx_events_user ON events (user_id)');
         $this->addSql('CREATE INDEX idx_events_external_event ON events (external_event_id)');
+        $this->addSql('CREATE UNIQUE INDEX uniq_events_external_event_type ON events (external_event_id, event_type)');
     }
 
     public function down(Schema $schema): void

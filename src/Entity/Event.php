@@ -12,6 +12,7 @@ use Symfony\Component\Uid\Uuid;
 
 #[ORM\Entity(repositoryClass: EventRepository::class)]
 #[ORM\Table(name: 'events')]
+#[ORM\UniqueConstraint(name: 'uniq_events_external_event_type', columns: ['external_event_id', 'event_type'])]
 #[ORM\Index(name: 'idx_events_user', columns: ['user_id'])]
 #[ORM\Index(name: 'idx_events_external_event', columns: ['external_event_id'])]
 class Event

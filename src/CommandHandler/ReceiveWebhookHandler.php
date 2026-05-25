@@ -11,6 +11,7 @@ use App\Exception\NotFoundException;
 use App\Message\WebhookMessage;
 use App\Repository\EventRepository;
 use App\Repository\UserRepository;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Uid\Uuid;
@@ -34,29 +35,53 @@ final readonly class ReceiveWebhookHandler
         }
 
         if ($this->events->hasExternalEvent($command->externalEventId, EventType::WebhookReceived)) {
+            return $this->handleAlreadyReceived($command);
+        }
+
+        try {
+            $this->entityManager->wrapInTransaction(function () use ($user, $command): void {
+                $this->eventStore->append(
+                    Uuid::v7()->toRfc4122(),
+                    'Webhook',
+                    $user->id(),
+                    null,
+                    EventType::WebhookReceived,
+                    [
+                        'type' => $command->type->value,
+                        'period' => $command->period->value,
+                        'payload' => $command->payload,
+                    ],
+                    null,
+                    null,
+                    $command->externalEventId,
+                    $command->occurredAt,
+                );
+                $this->entityManager->flush();
+            });
+        } catch (UniqueConstraintViolationException) {
+            $this->entityManager->clear();
+
+            return $this->handleAlreadyReceived($command);
+        }
+
+        $this->dispatchWebhookMessage($command);
+
+        return 'queued';
+    }
+
+    private function handleAlreadyReceived(ReceiveWebhookCommand $command): string
+    {
+        if ($this->events->hasPaymentResult($command->externalEventId)) {
             return 'ignored';
         }
 
-        $this->entityManager->wrapInTransaction(function () use ($user, $command): void {
-            $this->eventStore->append(
-                Uuid::v7()->toRfc4122(),
-                'Webhook',
-                $user->id(),
-                null,
-                EventType::WebhookReceived,
-                [
-                    'type' => $command->type->value,
-                    'period' => $command->period->value,
-                    'payload' => $command->payload,
-                ],
-                null,
-                null,
-                $command->externalEventId,
-                $command->occurredAt,
-            );
-            $this->entityManager->flush();
-        });
+        $this->dispatchWebhookMessage($command);
 
+        return 'queued';
+    }
+
+    private function dispatchWebhookMessage(ReceiveWebhookCommand $command): void
+    {
         $this->messageBus->dispatch(new WebhookMessage(
             $command->externalEventId,
             $command->type->value,
@@ -64,7 +89,5 @@ final readonly class ReceiveWebhookHandler
             $command->period->value,
             $command->occurredAt->format(DATE_ATOM),
         ));
-
-        return 'queued';
     }
 }

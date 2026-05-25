@@ -10,7 +10,9 @@ use App\Message\WebhookMessage;
 use App\Repository\SubscriptionRepository;
 use App\Repository\UserRepository;
 use DateTimeImmutable;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
+use Symfony\Component\Uid\Uuid;
 
 final class WebhookTest extends ApiTestCase
 {
@@ -82,26 +84,67 @@ final class WebhookTest extends ApiTestCase
         self::assertSame(SubscriptionStatus::Expired, $this->subscription($userId)->status());
     }
 
-    public function testDuplicateWebhookExternalEventIdIsIgnored(): void
+    public function testDuplicateWebhookBeforePaymentResultIsQueuedAgain(): void
     {
         $userId = $this->registerUser();
         $this->webhook('evt_duplicate', 'payment_success', $userId);
         $response = $this->webhook('evt_duplicate', 'payment_success', $userId);
 
         self::assertResponseStatusCodeSame(202);
+        self::assertSame('queued', $response['status']);
+        self::assertSame(1, $this->countEvents('evt_duplicate', 'WebhookReceived'));
+        $transport = static::getContainer()->get('messenger.transport.async');
+        self::assertInstanceOf(InMemoryTransport::class, $transport);
+        self::assertCount(1, $transport->getSent());
+    }
+
+    public function testDuplicateWebhookAfterPaymentSuccessIsIgnored(): void
+    {
+        $userId = $this->registerUser();
+        $this->webhook('evt_duplicate_success', 'payment_success', $userId);
+        $this->handleMessage('evt_duplicate_success');
+
+        $response = $this->webhook('evt_duplicate_success', 'payment_success', $userId);
+
+        self::assertResponseStatusCodeSame(202);
         self::assertSame('ignored', $response['status']);
-        $receivedCount = (int) $this->entityManager->getConnection()->fetchOne(
-            "SELECT COUNT(*) FROM events WHERE external_event_id = 'evt_duplicate' AND event_type = 'WebhookReceived'",
-        );
-        self::assertSame(1, $receivedCount);
+        self::assertSame(1, $this->countEvents('evt_duplicate_success', 'WebhookReceived'));
+        self::assertSame(1, $this->countEvents('evt_duplicate_success', 'PaymentSucceeded'));
+    }
 
-        $this->handleMessage('evt_duplicate');
-        $this->handleMessage('evt_duplicate');
+    public function testDuplicateWebhookAfterPaymentFailureIsIgnored(): void
+    {
+        $userId = $this->registerUser();
+        $this->postJson('/subscribe', ['user_id' => $userId, 'plan' => 'monthly']);
+        $this->webhook('evt_duplicate_failed', 'payment_failed', $userId);
+        $this->handleMessage('evt_duplicate_failed');
 
-        $count = (int) $this->entityManager->getConnection()->fetchOne(
-            "SELECT COUNT(*) FROM events WHERE external_event_id = 'evt_duplicate' AND event_type = 'PaymentSucceeded'",
-        );
-        self::assertSame(1, $count);
+        $response = $this->webhook('evt_duplicate_failed', 'payment_failed', $userId);
+
+        self::assertResponseStatusCodeSame(202);
+        self::assertSame('ignored', $response['status']);
+        self::assertSame(1, $this->countEvents('evt_duplicate_failed', 'WebhookReceived'));
+        self::assertSame(1, $this->countEvents('evt_duplicate_failed', 'PaymentFailed'));
+    }
+
+    public function testExternalEventTypeIsUniqueInEventStore(): void
+    {
+        $connection = $this->entityManager->getConnection();
+        $now = (new DateTimeImmutable())->format('Y-m-d H:i:s');
+        $params = [
+            'aggregate_id' => Uuid::v7()->toRfc4122(),
+            'aggregate_type' => 'Webhook',
+            'event_type' => 'WebhookReceived',
+            'payload' => json_encode(['type' => 'payment_success'], JSON_THROW_ON_ERROR),
+            'external_event_id' => 'evt_unique_guard',
+            'occurred_at' => $now,
+            'created_at' => $now,
+        ];
+
+        $connection->insert('events', ['id' => Uuid::v7()->toRfc4122()] + $params);
+
+        $this->expectException(UniqueConstraintViolationException::class);
+        $connection->insert('events', ['id' => Uuid::v7()->toRfc4122()] + $params);
     }
 
     /** @return array<string, mixed> */
@@ -136,6 +179,14 @@ final class WebhookTest extends ApiTestCase
         ));
 
         $this->entityManager->clear();
+    }
+
+    private function countEvents(string $externalEventId, string $eventType): int
+    {
+        return (int) $this->entityManager->getConnection()->fetchOne(
+            'SELECT COUNT(*) FROM events WHERE external_event_id = ? AND event_type = ?',
+            [$externalEventId, $eventType],
+        );
     }
 
     private function subscription(string $userId): Subscription
