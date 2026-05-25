@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Tests;
 
-use App\Console\RecoverPendingWebhooksCommand;
 use App\Entity\Subscription;
 use App\Enum\SubscriptionStatus;
 use App\Message\WebhookMessage;
@@ -34,6 +33,36 @@ final class WebhookTest extends ApiTestCase
         $this->handleMessage('evt_success_create');
         $subscription = $this->subscription($userId);
         self::assertSame(SubscriptionStatus::Active, $subscription->status());
+    }
+
+    public function testWebhookWithoutSecretFails(): void
+    {
+        $userId = $this->registerUser();
+        $response = $this->postJson('/webhooks/billing', $this->webhookPayload('evt_missing_secret', 'payment_success', $userId));
+
+        self::assertResponseStatusCodeSame(401);
+        self::assertSame('Invalid webhook secret.', $response['error']);
+    }
+
+    public function testWebhookWithWrongSecretFails(): void
+    {
+        $userId = $this->registerUser();
+        $response = $this->postJsonWithHeaders(
+            '/webhooks/billing',
+            $this->webhookPayload('evt_wrong_secret', 'payment_success', $userId),
+            ['HTTP_X_WEBHOOK_SECRET' => 'wrong'],
+        );
+
+        self::assertResponseStatusCodeSame(401);
+        self::assertSame('Invalid webhook secret.', $response['error']);
+    }
+
+    public function testWebhookWithInvalidUserIdFails(): void
+    {
+        $response = $this->webhook('evt_invalid_user_id', 'payment_success', 'not-a-uuid');
+
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('user_id must be a valid UUID.', $response['error']);
     }
 
     public function testPaymentSuccessExtendsFromCurrentPeriodEndIfStillActive(): void
@@ -338,13 +367,21 @@ final class WebhookTest extends ApiTestCase
     /** @return array<string, mixed> */
     private function webhook(string $externalEventId, string $type, string $userId, string $period = 'monthly'): array
     {
-        return $this->postJson('/webhooks/billing', [
+        return $this->postJsonWithHeaders('/webhooks/billing', $this->webhookPayload($externalEventId, $type, $userId, $period), [
+            'HTTP_X_WEBHOOK_SECRET' => 'test_webhook_secret',
+        ]);
+    }
+
+    /** @return array<string, mixed> */
+    private function webhookPayload(string $externalEventId, string $type, string $userId, string $period = 'monthly'): array
+    {
+        return [
             'external_event_id' => $externalEventId,
             'type' => $type,
             'user_id' => $userId,
             'period' => $period,
             'occurred_at' => (new DateTimeImmutable())->format(DATE_ATOM),
-        ]);
+        ];
     }
 
     private function handleMessage(string $externalEventId): void
@@ -395,7 +432,6 @@ final class WebhookTest extends ApiTestCase
         self::bootKernel();
         $application = new Application(self::$kernel);
         $command = $application->find('app:webhooks:recover-pending');
-        self::assertInstanceOf(RecoverPendingWebhooksCommand::class, $command);
 
         return new CommandTester($command);
     }

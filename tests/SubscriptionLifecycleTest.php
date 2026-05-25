@@ -82,6 +82,38 @@ final class SubscriptionLifecycleTest extends ApiTestCase
         self::assertSame('yearly', $response['plan']);
     }
 
+    public function testSubscribeWithInvalidUserIdFails(): void
+    {
+        $response = $this->postJson('/subscribe', ['user_id' => 'not-a-uuid', 'plan' => 'monthly']);
+
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('user_id must be a valid UUID.', $response['error']);
+    }
+
+    public function testCancelWithInvalidUserIdFails(): void
+    {
+        $response = $this->postJson('/cancel', ['user_id' => 'not-a-uuid']);
+
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('user_id must be a valid UUID.', $response['error']);
+    }
+
+    public function testResumeWithInvalidUserIdFails(): void
+    {
+        $response = $this->postJson('/resume', ['user_id' => 'not-a-uuid']);
+
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('user_id must be a valid UUID.', $response['error']);
+    }
+
+    public function testReadSubscriptionWithInvalidUserIdFails(): void
+    {
+        $response = $this->jsonRequest('GET', '/users/not-a-uuid/subscription');
+
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('id must be a valid UUID.', $response['error']);
+    }
+
     private function expireSubscription(string $userId, SubscriptionStatus $status): void
     {
         $this->entityManager->getConnection()->executeStatement(

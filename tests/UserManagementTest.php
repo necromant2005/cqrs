@@ -15,8 +15,11 @@ final class UserManagementTest extends ApiTestCase
 
         self::assertResponseStatusCodeSame(201);
         self::assertSame('user@example.com', $response['email']);
-        self::assertSame('tok_test_123', $response['payment_token']);
+        self::assertArrayNotHasKey('payment_token', $response);
         self::assertMatchesRegularExpression('/^[0-9a-f-]{36}$/', (string) $response['id']);
+
+        $storedToken = $this->entityManager->getConnection()->fetchOne('SELECT payment_token FROM users WHERE id = ?', [$response['id']]);
+        self::assertSame('tok_test_123', $storedToken);
     }
 
     public function testRegistrationWithoutPaymentTokenFails(): void

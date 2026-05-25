@@ -38,6 +38,8 @@ All commands must be executed through Docker Compose or the Rakefile. Do not run
 
 **Fake Payments:** Payment integrations are fake by design. `payment_token` and webhook payloads imitate provider data inside this local module.
 
+**Minimal Security:** The module does not implement user authentication, sessions, JWT, OAuth, or roles. Webhook intake uses a simple shared secret via `X-Webhook-Secret`, and user IDs are validated as UUIDs before repository lookup. `payment_token` is stored but not returned by the registration response.
+
 **Database Tables:**
 
 - `users`
@@ -174,6 +176,7 @@ Receive webhook:
 ```bash
 curl -X POST http://localhost:8080/webhooks/billing \
   -H 'Content-Type: application/json' \
+  -H 'X-Webhook-Secret: test_webhook_secret' \
   -d '{
     "external_event_id": "evt_123",
     "type": "payment_success",

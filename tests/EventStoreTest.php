@@ -41,4 +41,12 @@ final class EventStoreTest extends ApiTestCase
         self::assertNotContains('audit_logs', $tables);
         self::assertNotContains('webhooks', $tables);
     }
+
+    public function testReadEventsWithInvalidUserIdFails(): void
+    {
+        $response = $this->jsonRequest('GET', '/users/not-a-uuid/events');
+
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('id must be a valid UUID.', $response['error']);
+    }
 }

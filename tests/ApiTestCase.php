@@ -24,14 +24,15 @@ abstract class ApiTestCase extends WebTestCase
 
     /**
      * @param array<string, mixed> $payload
+     * @param array<string, string> $server
      * @return array<string, mixed>|list<array<string, mixed>>
      */
-    protected function jsonRequest(string $method, string $uri, array $payload = []): array
+    protected function jsonRequest(string $method, string $uri, array $payload = [], array $server = []): array
     {
         $this->client->request(
             $method,
             $uri,
-            server: ['CONTENT_TYPE' => 'application/json', 'HTTP_ACCEPT' => 'application/json'],
+            server: ['CONTENT_TYPE' => 'application/json', 'HTTP_ACCEPT' => 'application/json'] + $server,
             content: $payload === [] && $method === 'GET' ? null : json_encode($payload, JSON_THROW_ON_ERROR),
         );
 
@@ -48,6 +49,12 @@ abstract class ApiTestCase extends WebTestCase
     protected function postJson(string $uri, array $payload): array
     {
         return $this->jsonRequest('POST', $uri, $payload);
+    }
+
+    /** @param array<string, mixed> $payload */
+    protected function postJsonWithHeaders(string $uri, array $payload, array $server): array
+    {
+        return $this->jsonRequest('POST', $uri, $payload, $server);
     }
 
     protected function registerUser(string $email = 'user@example.com'): string

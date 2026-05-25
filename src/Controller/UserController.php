@@ -7,6 +7,7 @@ namespace App\Controller;
 use App\Command\RegisterUserCommand;
 use App\CommandHandler\RegisterUserHandler;
 use App\Exception\NotFoundException;
+use App\Http\UuidValidator;
 use App\Repository\EventRepository;
 use App\Repository\UserRepository;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -28,15 +29,16 @@ final class UserController extends AbstractController
         return $this->json([
             'id' => $user->id(),
             'email' => $user->email(),
-            'payment_token' => $user->paymentToken(),
             'created_at' => $user->createdAt()->format(DATE_ATOM),
             'updated_at' => $user->updatedAt()->format(DATE_ATOM),
         ], 201);
     }
 
     #[Route('/users/{id}/events', name: 'users_events', methods: ['GET'])]
-    public function events(string $id, UserRepository $users, EventRepository $events): JsonResponse
+    public function events(string $id, UserRepository $users, EventRepository $events, UuidValidator $uuids): JsonResponse
     {
+        $uuids->validate($id, 'id');
+
         if ($users->find($id) === null) {
             throw new NotFoundException('User not found.');
         }

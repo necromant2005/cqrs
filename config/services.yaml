@@ -7,3 +7,7 @@ services:
 
   App\:
     resource: '../src/'
+
+  App\Security\WebhookSecretVerifier:
+    arguments:
+      $secret: '%env(BILLING_WEBHOOK_SECRET)%'

@@ -9,6 +9,8 @@ use App\CommandHandler\ReceiveWebhookHandler;
 use App\Enum\WebhookType;
 use App\Enum\SubscriptionPlan;
 use App\Exception\BadRequestException;
+use App\Http\UuidValidator;
+use App\Security\WebhookSecretVerifier;
 use DateTimeImmutable;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -19,8 +21,15 @@ use ValueError;
 final class WebhookController extends AbstractController
 {
     #[Route('/webhooks/billing', name: 'webhooks_billing', methods: ['POST'])]
-    public function receive(Request $request, ReceiveWebhookHandler $handler): JsonResponse
+    public function receive(
+        Request $request,
+        ReceiveWebhookHandler $handler,
+        WebhookSecretVerifier $webhookSecretVerifier,
+        UuidValidator $uuids,
+    ): JsonResponse
     {
+        $webhookSecretVerifier->verify($request);
+
         $payload = $request->toArray();
 
         $externalEventId = trim((string) ($payload['external_event_id'] ?? ''));
@@ -32,7 +41,7 @@ final class WebhookController extends AbstractController
         $status = $handler(new ReceiveWebhookCommand(
             $externalEventId,
             $this->type((string) ($payload['type'] ?? '')),
-            (string) ($payload['user_id'] ?? ''),
+            $uuids->validate((string) ($payload['user_id'] ?? ''), 'user_id'),
             $this->period((string) ($payload['period'] ?? '')),
             $occurredAt,
             $payload,

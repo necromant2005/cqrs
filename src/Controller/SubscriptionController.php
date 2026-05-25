@@ -14,6 +14,7 @@ use App\Entity\Subscription;
 use App\Enum\SubscriptionPlan;
 use App\Exception\BadRequestException;
 use App\Exception\NotFoundException;
+use App\Http\UuidValidator;
 use App\Repository\SubscriptionRepository;
 use App\Repository\UserRepository;
 use DateTimeImmutable;
@@ -26,11 +27,13 @@ use ValueError;
 final class SubscriptionController extends AbstractController
 {
     #[Route('/subscribe', name: 'subscriptions_subscribe', methods: ['POST'])]
-    public function subscribe(Request $request, SubscribeUserHandler $handler): JsonResponse
+    public function subscribe(Request $request, SubscribeUserHandler $handler, UuidValidator $uuids): JsonResponse
     {
         $payload = $request->toArray();
+        $userId = $uuids->validate((string) ($payload['user_id'] ?? ''), 'user_id');
+
         $subscription = $handler(new SubscribeUserCommand(
-            (string) ($payload['user_id'] ?? ''),
+            $userId,
             $this->plan((string) ($payload['plan'] ?? '')),
         ));
 
@@ -38,26 +41,30 @@ final class SubscriptionController extends AbstractController
     }
 
     #[Route('/cancel', name: 'subscriptions_cancel', methods: ['POST'])]
-    public function cancel(Request $request, CancelSubscriptionHandler $handler): JsonResponse
+    public function cancel(Request $request, CancelSubscriptionHandler $handler, UuidValidator $uuids): JsonResponse
     {
         $payload = $request->toArray();
-        $subscription = $handler(new CancelSubscriptionCommand((string) ($payload['user_id'] ?? '')));
+        $userId = $uuids->validate((string) ($payload['user_id'] ?? ''), 'user_id');
+        $subscription = $handler(new CancelSubscriptionCommand($userId));
 
         return $this->json($this->subscriptionPayload($subscription));
     }
 
     #[Route('/resume', name: 'subscriptions_resume', methods: ['POST'])]
-    public function resume(Request $request, ResumeSubscriptionHandler $handler): JsonResponse
+    public function resume(Request $request, ResumeSubscriptionHandler $handler, UuidValidator $uuids): JsonResponse
     {
         $payload = $request->toArray();
-        $subscription = $handler(new ResumeSubscriptionCommand((string) ($payload['user_id'] ?? '')));
+        $userId = $uuids->validate((string) ($payload['user_id'] ?? ''), 'user_id');
+        $subscription = $handler(new ResumeSubscriptionCommand($userId));
 
         return $this->json($this->subscriptionPayload($subscription));
     }
 
     #[Route('/users/{id}/subscription', name: 'users_subscription', methods: ['GET'])]
-    public function show(string $id, UserRepository $users, SubscriptionRepository $subscriptions): JsonResponse
+    public function show(string $id, UserRepository $users, SubscriptionRepository $subscriptions, UuidValidator $uuids): JsonResponse
     {
+        $uuids->validate($id, 'id');
+
         $user = $users->find($id);
         if ($user === null) {
             throw new NotFoundException('User not found.');
