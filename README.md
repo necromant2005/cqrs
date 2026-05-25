@@ -24,9 +24,11 @@ All commands must be executed through Docker Compose or the Rakefile. Do not run
 
 **Webhook Intake:** Webhook intake also uses `events`. When `POST /webhooks/billing` receives a new external event, it writes a `WebhookReceived` event and dispatches a Messenger message. If the same `external_event_id` is received again before a terminal result exists, the handler reloads the original `WebhookReceived` event and dispatches the original type, user, period, and occurred time again. Retry payload changes are ignored. If a terminal result already exists for that external event, the handler returns `202` with `ignored`.
 
-**Async Idempotency:** Async payment handlers are idempotent as well. Before changing the subscription projection, the worker checks whether `PaymentSucceeded`, `PaymentFailed`, or `WebhookProcessingFailed` already exists for the same `external_event_id`. If one exists, the worker returns before changing the subscription again. Database constraints prevent duplicate event types and prevent conflicting terminal results for one external event.
+**Async Idempotency:** Async payment handlers are idempotent as well. Before changing the subscription projection, the worker checks whether `PaymentSucceeded` or `PaymentFailed` already exists for the same `external_event_id`. If one exists, the worker returns before changing the subscription again. Database constraints prevent duplicate event types and prevent conflicting payment results for one external event.
 
-**Webhook Failures:** Permanent business failures are recorded as events. For example, a failed-payment webhook for a user without a subscription creates `WebhookProcessingFailed`, which makes the failure visible in `GET /users/{id}/events` and stops repeated retries from applying later effects for the same external event.
+**Webhook Recovery:** Pending webhook work can be recovered from `events`. The recovery command scans `WebhookReceived` events that do not have a payment result and dispatches their original stored payload again. `rake worker` runs this recovery before starting the Messenger consumer.
+
+**Webhook Failures:** Business failures are recorded as events. For example, a failed-payment webhook for a user without a subscription creates `WebhookProcessingFailed`, which makes the failure visible in `GET /users/{id}/events`. This failure event is not terminal: if the same external event is retried after a subscription exists, the payment failure can still be processed.
 
 **Subscription Projection:** `subscriptions` is a projection/read model. It stores the current subscription state for fast `GET /users/{id}/subscription` responses. Lifecycle facts such as `SubscriptionStarted`, `SubscriptionCanceled`, `PaymentSucceeded`, and `SubscriptionExpired` are written to `events`.
 
@@ -64,6 +66,7 @@ rake serve
 rake install
 rake migrate
 rake test
+rake recover
 rake worker
 rake bash
 rake logs
@@ -106,6 +109,12 @@ Run the async worker:
 
 ```bash
 rake worker
+```
+
+Recover pending stored webhook events without starting the worker:
+
+```bash
+rake recover
 ```
 
 Run tests:

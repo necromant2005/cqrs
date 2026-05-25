@@ -6,6 +6,7 @@ namespace App\Repository;
 
 use App\Entity\Event;
 use App\Enum\EventType;
+use App\ReadModel\PendingWebhook;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
 
@@ -56,7 +57,6 @@ final class EventRepository extends ServiceEntityRepository
         return $this->hasAnyExternalEvent($externalEventId, [
             EventType::PaymentSucceeded,
             EventType::PaymentFailed,
-            EventType::WebhookProcessingFailed,
         ]);
     }
 
@@ -70,6 +70,44 @@ final class EventRepository extends ServiceEntityRepository
             ->setMaxResults(1)
             ->getQuery()
             ->getOneOrNullResult();
+    }
+
+    /** @return list<PendingWebhook> */
+    public function findRecoverableWebhooks(): array
+    {
+        $rows = $this->getEntityManager()->getConnection()->fetchAllAssociative(
+            <<<'SQL'
+SELECT received.external_event_id, received.user_id, received.payload, received.occurred_at
+FROM events received
+WHERE received.event_type = :received_type
+  AND received.external_event_id IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM events terminal
+      WHERE terminal.external_event_id = received.external_event_id
+        AND terminal.event_type IN (:success_type, :failed_type)
+  )
+ORDER BY received.occurred_at ASC, received.created_at ASC
+SQL,
+            [
+                'received_type' => EventType::WebhookReceived->value,
+                'success_type' => EventType::PaymentSucceeded->value,
+                'failed_type' => EventType::PaymentFailed->value,
+            ],
+        );
+
+        return array_values(array_map(function (array $row): PendingWebhook {
+            $payload = json_decode((string) $row['payload'], true, 512, JSON_THROW_ON_ERROR);
+            $originalPayload = is_array($payload['payload'] ?? null) ? $payload['payload'] : [];
+
+            return new PendingWebhook(
+                (string) $row['external_event_id'],
+                (string) $payload['type'],
+                (string) ($originalPayload['user_id'] ?? $row['user_id']),
+                (string) $payload['period'],
+                (new \DateTimeImmutable((string) $row['occurred_at']))->format(DATE_ATOM),
+            );
+        }, $rows));
     }
 
     /**

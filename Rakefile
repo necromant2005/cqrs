@@ -26,7 +26,12 @@ task :test do
 end
 
 task :worker do
+  sh 'docker compose exec app php bin/console app:webhooks:recover-pending'
   sh 'docker compose exec app php bin/console messenger:consume async -vv'
+end
+
+task :recover do
+  sh 'docker compose exec app php bin/console app:webhooks:recover-pending'
 end
 
 task :bash do

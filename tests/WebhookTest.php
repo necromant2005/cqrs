@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests;
 
+use App\Console\RecoverPendingWebhooksCommand;
 use App\Entity\Subscription;
 use App\Enum\SubscriptionStatus;
 use App\Message\WebhookMessage;
@@ -11,6 +12,8 @@ use App\Repository\SubscriptionRepository;
 use App\Repository\UserRepository;
 use DateTimeImmutable;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use Symfony\Bundle\FrameworkBundle\Console\Application;
+use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\Uid\Uuid;
 
@@ -195,7 +198,33 @@ final class WebhookTest extends ApiTestCase
 
         $response = $this->webhook('evt_failed_without_subscription', 'payment_failed', $userId);
         self::assertResponseStatusCodeSame(202);
-        self::assertSame('ignored', $response['status']);
+        self::assertSame('queued', $response['status']);
+    }
+
+    public function testPaymentFailureCanBeProcessedAfterEarlierProcessingFailure(): void
+    {
+        $userId = $this->registerUser();
+        $this->webhook('evt_failed_then_valid', 'payment_failed', $userId);
+        $this->handleMessage('evt_failed_then_valid');
+        $this->postJson('/subscribe', ['user_id' => $userId, 'plan' => 'monthly']);
+
+        $this->webhook('evt_failed_then_valid', 'payment_failed', $userId);
+        $this->handleMessage('evt_failed_then_valid');
+
+        self::assertSame(1, $this->countEvents('evt_failed_then_valid', 'WebhookProcessingFailed'));
+        self::assertSame(1, $this->countEvents('evt_failed_then_valid', 'PaymentFailed'));
+        self::assertSame(SubscriptionStatus::PastDue, $this->subscription($userId)->status());
+    }
+
+    public function testRepeatedMissingSubscriptionFailureDoesNotDuplicateProcessingFailure(): void
+    {
+        $userId = $this->registerUser();
+        $this->webhook('evt_repeated_missing_subscription', 'payment_failed', $userId);
+        $this->handleMessage('evt_repeated_missing_subscription');
+        $this->handleMessage('evt_repeated_missing_subscription');
+
+        self::assertSame(1, $this->countEvents('evt_repeated_missing_subscription', 'WebhookProcessingFailed'));
+        self::assertSame(0, $this->countEvents('evt_repeated_missing_subscription', 'PaymentFailed'));
     }
 
     public function testExternalEventTypeIsUniqueInEventStore(): void
@@ -235,6 +264,68 @@ final class WebhookTest extends ApiTestCase
 
         $this->expectException(UniqueConstraintViolationException::class);
         $connection->insert('events', ['id' => Uuid::v7()->toRfc4122(), 'event_type' => 'PaymentFailed'] + $params);
+    }
+
+    public function testProcessingFailureDoesNotConsumeTerminalResultSlot(): void
+    {
+        $connection = $this->entityManager->getConnection();
+        $now = (new DateTimeImmutable())->format('Y-m-d H:i:s');
+        $params = [
+            'aggregate_id' => Uuid::v7()->toRfc4122(),
+            'aggregate_type' => 'Webhook',
+            'payload' => json_encode(['period' => 'monthly'], JSON_THROW_ON_ERROR),
+            'external_event_id' => 'evt_non_terminal_failure',
+            'occurred_at' => $now,
+            'created_at' => $now,
+        ];
+
+        $connection->insert('events', ['id' => Uuid::v7()->toRfc4122(), 'event_type' => 'WebhookProcessingFailed'] + $params);
+        $connection->insert('events', ['id' => Uuid::v7()->toRfc4122(), 'event_type' => 'PaymentFailed'] + $params);
+
+        self::assertSame(1, $this->countEvents('evt_non_terminal_failure', 'WebhookProcessingFailed'));
+        self::assertSame(1, $this->countEvents('evt_non_terminal_failure', 'PaymentFailed'));
+    }
+
+    public function testRecoveryCommandDispatchesPendingWebhook(): void
+    {
+        $userId = $this->registerUser();
+        $this->webhook('evt_recover_pending', 'payment_success', $userId);
+        $this->resetAsyncTransport();
+
+        $tester = $this->recoverPendingWebhooksTester();
+        $tester->execute([]);
+
+        $transport = static::getContainer()->get('messenger.transport.async');
+        self::assertInstanceOf(InMemoryTransport::class, $transport);
+        $sent = $transport->getSent();
+        self::assertCount(1, $sent);
+        $message = $sent[0]->getMessage();
+        self::assertInstanceOf(WebhookMessage::class, $message);
+        self::assertSame('evt_recover_pending', $message->externalEventId);
+        self::assertStringContainsString('Dispatched 1 pending webhook message(s).', $tester->getDisplay());
+    }
+
+    public function testRecoveryCommandSkipsProcessedWebhook(): void
+    {
+        $userId = $this->registerUser();
+        $this->webhook('evt_recover_processed', 'payment_success', $userId);
+        $this->handleMessage('evt_recover_processed');
+        $this->resetAsyncTransport();
+
+        $tester = $this->recoverPendingWebhooksTester();
+        $tester->execute([]);
+
+        $transport = static::getContainer()->get('messenger.transport.async');
+        self::assertInstanceOf(InMemoryTransport::class, $transport);
+        self::assertCount(0, $transport->getSent());
+        self::assertStringContainsString('Dispatched 0 pending webhook message(s).', $tester->getDisplay());
+    }
+
+    public function testRakeWorkerRunsRecoveryBeforeMessengerConsumer(): void
+    {
+        $rakefile = file_get_contents(__DIR__ . '/../Rakefile');
+        self::assertIsString($rakefile);
+        self::assertStringContainsString("docker compose exec app php bin/console app:webhooks:recover-pending'\n  sh 'docker compose exec app php bin/console messenger:consume async -vv", $rakefile);
     }
 
     public function testMessengerQueueNameIsEvents(): void
@@ -297,6 +388,16 @@ final class WebhookTest extends ApiTestCase
         $transport = static::getContainer()->get('messenger.transport.async');
         self::assertInstanceOf(InMemoryTransport::class, $transport);
         $transport->reset();
+    }
+
+    private function recoverPendingWebhooksTester(): CommandTester
+    {
+        self::bootKernel();
+        $application = new Application(self::$kernel);
+        $command = $application->find('app:webhooks:recover-pending');
+        self::assertInstanceOf(RecoverPendingWebhooksCommand::class, $command);
+
+        return new CommandTester($command);
     }
 
     private function webhookMessage(

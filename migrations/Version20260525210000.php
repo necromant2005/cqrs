@@ -27,7 +27,7 @@ final class Version20260525210000 extends AbstractMigration
         $this->addSql('CREATE INDEX idx_events_user ON events (user_id)');
         $this->addSql('CREATE INDEX idx_events_external_event ON events (external_event_id)');
         $this->addSql('CREATE UNIQUE INDEX uniq_events_external_event_type ON events (external_event_id, event_type)');
-        $this->addSql("CREATE UNIQUE INDEX uniq_events_external_event_terminal ON events (external_event_id) WHERE event_type IN ('PaymentSucceeded', 'PaymentFailed', 'WebhookProcessingFailed')");
+        $this->addSql("CREATE UNIQUE INDEX uniq_events_external_event_terminal ON events (external_event_id) WHERE event_type IN ('PaymentSucceeded', 'PaymentFailed')");
     }
 
     public function down(Schema $schema): void
