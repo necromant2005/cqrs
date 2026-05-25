@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\CommandHandler;
 
 use App\Command\ReceiveWebhookCommand;
+use App\Entity\Event;
 use App\Enum\EventType;
 use App\EventStore\EventStore;
 use App\Exception\NotFoundException;
@@ -29,13 +30,13 @@ final readonly class ReceiveWebhookHandler
 
     public function __invoke(ReceiveWebhookCommand $command): string
     {
+        if ($this->events->hasExternalEvent($command->externalEventId, EventType::WebhookReceived)) {
+            return $this->handleAlreadyReceived($command);
+        }
+
         $user = $this->users->find($command->userId);
         if ($user === null) {
             throw new NotFoundException('User not found.');
-        }
-
-        if ($this->events->hasExternalEvent($command->externalEventId, EventType::WebhookReceived)) {
-            return $this->handleAlreadyReceived($command);
         }
 
         try {
@@ -71,11 +72,16 @@ final readonly class ReceiveWebhookHandler
 
     private function handleAlreadyReceived(ReceiveWebhookCommand $command): string
     {
-        if ($this->events->hasPaymentResult($command->externalEventId)) {
+        if ($this->events->hasTerminalWebhookResult($command->externalEventId)) {
             return 'ignored';
         }
 
-        $this->dispatchWebhookMessage($command);
+        $originalEvent = $this->events->findWebhookReceived($command->externalEventId);
+        if ($originalEvent === null) {
+            throw new NotFoundException('Webhook event not found.');
+        }
+
+        $this->dispatchStoredWebhookMessage($command->externalEventId, $originalEvent);
 
         return 'queued';
     }
@@ -88,6 +94,21 @@ final readonly class ReceiveWebhookHandler
             $command->userId,
             $command->period->value,
             $command->occurredAt->format(DATE_ATOM),
+        ));
+    }
+
+    private function dispatchStoredWebhookMessage(string $externalEventId, Event $event): void
+    {
+        $payload = $event->payload();
+        $originalPayload = is_array($payload['payload'] ?? null) ? $payload['payload'] : [];
+        $userId = (string) ($originalPayload['user_id'] ?? $event->userId());
+
+        $this->messageBus->dispatch(new WebhookMessage(
+            $externalEventId,
+            (string) $payload['type'],
+            $userId,
+            (string) $payload['period'],
+            $event->occurredAt()->format(DATE_ATOM),
         ));
     }
 }

@@ -88,6 +88,7 @@ final class WebhookTest extends ApiTestCase
     {
         $userId = $this->registerUser();
         $this->webhook('evt_duplicate', 'payment_success', $userId);
+        $this->resetAsyncTransport();
         $response = $this->webhook('evt_duplicate', 'payment_success', $userId);
 
         self::assertResponseStatusCodeSame(202);
@@ -96,6 +97,39 @@ final class WebhookTest extends ApiTestCase
         $transport = static::getContainer()->get('messenger.transport.async');
         self::assertInstanceOf(InMemoryTransport::class, $transport);
         self::assertCount(1, $transport->getSent());
+    }
+
+    public function testDuplicateWebhookBeforePaymentResultReplaysOriginalPayload(): void
+    {
+        $originalUserId = $this->registerUser('original@example.com');
+        $otherUserId = $this->registerUser('other@example.com');
+        $this->webhook('evt_payload_replay', 'payment_success', $originalUserId);
+        $this->resetAsyncTransport();
+
+        $response = $this->webhook('evt_payload_replay', 'payment_failed', $otherUserId);
+
+        self::assertResponseStatusCodeSame(202);
+        self::assertSame('queued', $response['status']);
+        $transport = static::getContainer()->get('messenger.transport.async');
+        self::assertInstanceOf(InMemoryTransport::class, $transport);
+        $sent = $transport->getSent();
+        self::assertCount(1, $sent);
+        $message = $sent[0]->getMessage();
+        self::assertInstanceOf(WebhookMessage::class, $message);
+        self::assertSame('payment_success', $message->type);
+        self::assertSame($originalUserId, $message->userId);
+    }
+
+    public function testDuplicateWebhookWithUnknownRetryUserStillReplaysOriginalPayload(): void
+    {
+        $originalUserId = $this->registerUser();
+        $this->webhook('evt_unknown_retry_user', 'payment_success', $originalUserId);
+        $this->resetAsyncTransport();
+
+        $response = $this->webhook('evt_unknown_retry_user', 'payment_failed', Uuid::v7()->toRfc4122());
+
+        self::assertResponseStatusCodeSame(202);
+        self::assertSame('queued', $response['status']);
     }
 
     public function testDuplicateWebhookAfterPaymentSuccessIsIgnored(): void
@@ -127,6 +161,43 @@ final class WebhookTest extends ApiTestCase
         self::assertSame(1, $this->countEvents('evt_duplicate_failed', 'PaymentFailed'));
     }
 
+    public function testPaymentFailureAfterPaymentSuccessWithSameExternalEventIsSkipped(): void
+    {
+        $userId = $this->registerUser();
+        $this->invokeWebhookMessage('evt_terminal_success', 'payment_success', $userId);
+        $this->invokeWebhookMessage('evt_terminal_success', 'payment_failed', $userId);
+
+        self::assertSame(1, $this->countEvents('evt_terminal_success', 'PaymentSucceeded'));
+        self::assertSame(0, $this->countEvents('evt_terminal_success', 'PaymentFailed'));
+        self::assertSame(SubscriptionStatus::Active, $this->subscription($userId)->status());
+    }
+
+    public function testPaymentSuccessAfterPaymentFailureWithSameExternalEventIsSkipped(): void
+    {
+        $userId = $this->registerUser();
+        $this->postJson('/subscribe', ['user_id' => $userId, 'plan' => 'monthly']);
+        $this->invokeWebhookMessage('evt_terminal_failed', 'payment_failed', $userId);
+        $this->invokeWebhookMessage('evt_terminal_failed', 'payment_success', $userId);
+
+        self::assertSame(1, $this->countEvents('evt_terminal_failed', 'PaymentFailed'));
+        self::assertSame(0, $this->countEvents('evt_terminal_failed', 'PaymentSucceeded'));
+        self::assertSame(SubscriptionStatus::PastDue, $this->subscription($userId)->status());
+    }
+
+    public function testPaymentFailureWithoutSubscriptionRecordsProcessingFailure(): void
+    {
+        $userId = $this->registerUser();
+        $this->webhook('evt_failed_without_subscription', 'payment_failed', $userId);
+        $this->handleMessage('evt_failed_without_subscription');
+
+        self::assertSame(1, $this->countEvents('evt_failed_without_subscription', 'WebhookProcessingFailed'));
+        self::assertSame(0, $this->countEvents('evt_failed_without_subscription', 'PaymentFailed'));
+
+        $response = $this->webhook('evt_failed_without_subscription', 'payment_failed', $userId);
+        self::assertResponseStatusCodeSame(202);
+        self::assertSame('ignored', $response['status']);
+    }
+
     public function testExternalEventTypeIsUniqueInEventStore(): void
     {
         $connection = $this->entityManager->getConnection();
@@ -147,14 +218,40 @@ final class WebhookTest extends ApiTestCase
         $connection->insert('events', ['id' => Uuid::v7()->toRfc4122()] + $params);
     }
 
+    public function testExternalEventCanHaveOnlyOneTerminalWebhookResult(): void
+    {
+        $connection = $this->entityManager->getConnection();
+        $now = (new DateTimeImmutable())->format('Y-m-d H:i:s');
+        $params = [
+            'aggregate_id' => Uuid::v7()->toRfc4122(),
+            'aggregate_type' => 'Subscription',
+            'payload' => json_encode(['period' => 'monthly'], JSON_THROW_ON_ERROR),
+            'external_event_id' => 'evt_terminal_guard',
+            'occurred_at' => $now,
+            'created_at' => $now,
+        ];
+
+        $connection->insert('events', ['id' => Uuid::v7()->toRfc4122(), 'event_type' => 'PaymentSucceeded'] + $params);
+
+        $this->expectException(UniqueConstraintViolationException::class);
+        $connection->insert('events', ['id' => Uuid::v7()->toRfc4122(), 'event_type' => 'PaymentFailed'] + $params);
+    }
+
+    public function testMessengerQueueNameIsEvents(): void
+    {
+        $config = file_get_contents(__DIR__ . '/../config/packages/framework.yaml');
+        self::assertIsString($config);
+        self::assertStringContainsString('queue_name: events', $config);
+    }
+
     /** @return array<string, mixed> */
-    private function webhook(string $externalEventId, string $type, string $userId): array
+    private function webhook(string $externalEventId, string $type, string $userId, string $period = 'monthly'): array
     {
         return $this->postJson('/webhooks/billing', [
             'external_event_id' => $externalEventId,
             'type' => $type,
             'user_id' => $userId,
-            'period' => 'monthly',
+            'period' => $period,
             'occurred_at' => (new DateTimeImmutable())->format(DATE_ATOM),
         ]);
     }
@@ -170,7 +267,7 @@ final class WebhookTest extends ApiTestCase
         self::assertIsArray($payload);
 
         $handler = static::getContainer()->get(\App\MessageHandler\WebhookMessageHandler::class);
-        $handler(new WebhookMessage(
+        $handler($this->webhookMessage(
             $externalEventId,
             (string) $payload['type'],
             (string) $payload['payload']['user_id'],
@@ -179,6 +276,37 @@ final class WebhookTest extends ApiTestCase
         ));
 
         $this->entityManager->clear();
+    }
+
+    private function invokeWebhookMessage(string $externalEventId, string $type, string $userId): void
+    {
+        $handler = static::getContainer()->get(\App\MessageHandler\WebhookMessageHandler::class);
+        $handler($this->webhookMessage(
+            $externalEventId,
+            $type,
+            $userId,
+            'monthly',
+            (new DateTimeImmutable())->format(DATE_ATOM),
+        ));
+
+        $this->entityManager->clear();
+    }
+
+    private function resetAsyncTransport(): void
+    {
+        $transport = static::getContainer()->get('messenger.transport.async');
+        self::assertInstanceOf(InMemoryTransport::class, $transport);
+        $transport->reset();
+    }
+
+    private function webhookMessage(
+        string $externalEventId,
+        string $type,
+        string $userId,
+        string $period,
+        string $occurredAt,
+    ): WebhookMessage {
+        return new WebhookMessage($externalEventId, $type, $userId, $period, $occurredAt);
     }
 
     private function countEvents(string $externalEventId, string $eventType): int

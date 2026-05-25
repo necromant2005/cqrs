@@ -16,4 +16,5 @@ enum EventType: string
     case SubscriptionExpired = 'SubscriptionExpired';
     case WebhookReceived = 'WebhookReceived';
     case WebhookIgnoredAsDuplicate = 'WebhookIgnoredAsDuplicate';
+    case WebhookProcessingFailed = 'WebhookProcessingFailed';
 }

@@ -51,6 +51,27 @@ final class EventRepository extends ServiceEntityRepository
         ]);
     }
 
+    public function hasTerminalWebhookResult(string $externalEventId): bool
+    {
+        return $this->hasAnyExternalEvent($externalEventId, [
+            EventType::PaymentSucceeded,
+            EventType::PaymentFailed,
+            EventType::WebhookProcessingFailed,
+        ]);
+    }
+
+    public function findWebhookReceived(string $externalEventId): ?Event
+    {
+        return $this->createQueryBuilder('event')
+            ->andWhere('event.externalEventId = :externalEventId')
+            ->andWhere('event.eventType = :eventType')
+            ->setParameter('externalEventId', $externalEventId)
+            ->setParameter('eventType', EventType::WebhookReceived)
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+    }
+
     /**
      * @param list<EventType> $eventTypes
      */

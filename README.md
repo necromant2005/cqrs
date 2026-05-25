@@ -16,15 +16,17 @@ All commands must be executed through Docker Compose or the Rakefile. Do not run
 
 **SQLite:** SQLite is the application database. It stores users, subscription projections, and events in `var/data/app.db`, which keeps the assignment easy to run inside Docker and easy to inspect during review.
 
-**Redis Queue:** Redis is the queue backend for async webhook processing. `POST /webhooks/billing` records the received event in SQLite, dispatches a Messenger message to Redis, and returns `202` without running the payment lifecycle synchronously.
+**Redis Queue:** Redis is the queue backend for async webhook processing. `POST /webhooks/billing` records the received event in SQLite, dispatches a Messenger message to the `events` queue, and returns `202` without running the payment lifecycle synchronously.
 
 **UUIDs:** UUIDs are used for internal identifiers everywhere: users, subscriptions, events, and aggregate IDs. This removes autoincrement coupling, makes IDs safe to generate in application code, and keeps API payloads stable if the storage engine changes later. External billing event IDs come from the provider contract and are stored in `events.external_event_id`.
 
 **Event Timeline:** The `events` table is the append-only history source and audit trail. Each important fact is stored once as a domain event. `GET /users/{id}/events` reads directly from `events` and returns a user-friendly timeline.
 
-**Webhook Intake:** Webhook intake also uses `events`. When `POST /webhooks/billing` receives a new external event, it writes a `WebhookReceived` event and dispatches a Messenger message. If the same `external_event_id` is received again before a payment result exists, the handler returns `202` and dispatches the message again so a missed worker delivery can be recovered by retrying the HTTP webhook. If `PaymentSucceeded` or `PaymentFailed` already exists for that external event, the handler returns `202` with `ignored`.
+**Webhook Intake:** Webhook intake also uses `events`. When `POST /webhooks/billing` receives a new external event, it writes a `WebhookReceived` event and dispatches a Messenger message. If the same `external_event_id` is received again before a terminal result exists, the handler reloads the original `WebhookReceived` event and dispatches the original type, user, period, and occurred time again. Retry payload changes are ignored. If a terminal result already exists for that external event, the handler returns `202` with `ignored`.
 
-**Async Idempotency:** Async payment handlers are idempotent as well. `payment_success` checks whether `PaymentSucceeded` already exists for the same `external_event_id`; `payment_failed` checks whether `PaymentFailed` already exists. If the effect event exists, the worker returns before changing the subscription again. A unique database constraint on `events.external_event_id` and `events.event_type` is the final guard that prevents the same external event effect from being stored twice.
+**Async Idempotency:** Async payment handlers are idempotent as well. Before changing the subscription projection, the worker checks whether `PaymentSucceeded`, `PaymentFailed`, or `WebhookProcessingFailed` already exists for the same `external_event_id`. If one exists, the worker returns before changing the subscription again. Database constraints prevent duplicate event types and prevent conflicting terminal results for one external event.
+
+**Webhook Failures:** Permanent business failures are recorded as events. For example, a failed-payment webhook for a user without a subscription creates `WebhookProcessingFailed`, which makes the failure visible in `GET /users/{id}/events` and stops repeated retries from applying later effects for the same external event.
 
 **Subscription Projection:** `subscriptions` is a projection/read model. It stores the current subscription state for fast `GET /users/{id}/subscription` responses. Lifecycle facts such as `SubscriptionStarted`, `SubscriptionCanceled`, `PaymentSucceeded`, and `SubscriptionExpired` are written to `events`.
 

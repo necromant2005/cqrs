@@ -9,7 +9,7 @@ framework:
       async:
         dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
         options:
-          queue_name: webhooks
+          queue_name: events
     routing:
       App\Message\WebhookMessage: async
   test: true

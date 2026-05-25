@@ -13,8 +13,8 @@ use App\Repository\EventRepository;
 use App\Repository\SubscriptionRepository;
 use App\Repository\UserRepository;
 use DateTimeImmutable;
-use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Uid\Uuid;
 
 final readonly class HandlePaymentFailedHandler
 {
@@ -34,56 +34,70 @@ final readonly class HandlePaymentFailedHandler
             throw new NotFoundException('User not found.');
         }
 
-        try {
-            $this->entityManager->wrapInTransaction(function () use ($user, $command): void {
-                if ($this->events->hasExternalEvent($command->externalEventId, EventType::PaymentFailed)) {
-                    return;
-                }
+        $this->entityManager->wrapInTransaction(function () use ($user, $command): void {
+            if ($this->events->hasTerminalWebhookResult($command->externalEventId)) {
+                return;
+            }
 
-                $subscription = $this->subscriptions->findOneByUser($user);
-                if ($subscription === null) {
-                    throw new NotFoundException('Subscription not found.');
-                }
+            $subscription = $this->subscriptions->findOneByUser($user);
+            if ($subscription === null) {
+                $this->eventStore->append(
+                    Uuid::v7()->toRfc4122(),
+                    'Webhook',
+                    $user->id(),
+                    null,
+                    EventType::WebhookProcessingFailed,
+                    [
+                        'type' => 'payment_failed',
+                        'period' => $command->period->value,
+                        'reason' => 'Subscription not found.',
+                    ],
+                    null,
+                    null,
+                    $command->externalEventId,
+                    $command->occurredAt,
+                );
+                $this->entityManager->flush();
 
-                $now = new DateTimeImmutable();
-                $previousStatus = $subscription->status()->value;
-                $newStatus = $subscription->currentPeriodEnd() > $now
-                    ? SubscriptionStatus::PastDue
-                    : SubscriptionStatus::Expired;
+                return;
+            }
 
+            $now = new DateTimeImmutable();
+            $previousStatus = $subscription->status()->value;
+            $newStatus = $subscription->currentPeriodEnd() > $now
+                ? SubscriptionStatus::PastDue
+                : SubscriptionStatus::Expired;
+
+            $this->eventStore->append(
+                $subscription->id(),
+                'Subscription',
+                $user->id(),
+                $subscription->id(),
+                EventType::PaymentFailed,
+                ['period' => $command->period->value],
+                $previousStatus,
+                $newStatus->value,
+                $command->externalEventId,
+                $command->occurredAt,
+            );
+
+            if ($subscription->status() !== $newStatus) {
+                $subscription->changeStatus($newStatus);
                 $this->eventStore->append(
                     $subscription->id(),
                     'Subscription',
                     $user->id(),
                     $subscription->id(),
-                    EventType::PaymentFailed,
-                    ['period' => $command->period->value],
+                    $newStatus === SubscriptionStatus::PastDue ? EventType::SubscriptionPastDue : EventType::SubscriptionExpired,
+                    [],
                     $previousStatus,
                     $newStatus->value,
                     $command->externalEventId,
                     $command->occurredAt,
                 );
+            }
 
-                if ($subscription->status() !== $newStatus) {
-                    $subscription->changeStatus($newStatus);
-                    $this->eventStore->append(
-                        $subscription->id(),
-                        'Subscription',
-                        $user->id(),
-                        $subscription->id(),
-                        $newStatus === SubscriptionStatus::PastDue ? EventType::SubscriptionPastDue : EventType::SubscriptionExpired,
-                        [],
-                        $previousStatus,
-                        $newStatus->value,
-                        $command->externalEventId,
-                        $command->occurredAt,
-                    );
-                }
-
-                $this->entityManager->flush();
-            });
-        } catch (UniqueConstraintViolationException) {
-            $this->entityManager->clear();
-        }
+            $this->entityManager->flush();
+        });
     }
 }

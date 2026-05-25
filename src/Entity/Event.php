@@ -94,6 +94,11 @@ class Event
         return $this->eventType;
     }
 
+    public function userId(): ?string
+    {
+        return $this->userId;
+    }
+
     public function previousStatus(): ?string
     {
         return $this->previousStatus;
