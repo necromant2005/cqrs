@@ -1,0 +1,17 @@
+services:
+  app:
+    build: .
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "8080:8000"
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: "sqlite:///%kernel.project_dir%/var/data/app.db"
+      MESSENGER_TRANSPORT_DSN: "redis://redis:6379/messages"
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:alpine

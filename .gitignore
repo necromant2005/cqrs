@@ -1,0 +1,10 @@
+/vendor/
+/var/*
+!/var/.gitkeep
+!/var/data/
+/var/data/*
+!/var/data/.gitkeep
+.phpunit.result.cache
+.phpunit.cache/
+.env.local
+.env.*.local

@@ -1,0 +1,18 @@
+framework:
+  secret: '%env(APP_SECRET)%'
+  handle_all_throwables: true
+  http_method_override: false
+  php_errors:
+    log: true
+  messenger:
+    transports:
+      async:
+        dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+        options:
+          queue_name: webhooks
+    routing:
+      App\Message\WebhookMessage: async
+  test: true
+  session:
+    storage_factory_id: session.storage.factory.mock_file
+    enabled: false

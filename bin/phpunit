@@ -1,0 +1,10 @@
+#!/usr/bin/env php
+<?php
+
+$command = PHP_BINARY.' '.__DIR__.'/../vendor/bin/phpunit';
+foreach (array_slice($argv, 1) as $argument) {
+    $command .= ' '.escapeshellarg($argument);
+}
+
+passthru($command, $exitCode);
+exit($exitCode);
